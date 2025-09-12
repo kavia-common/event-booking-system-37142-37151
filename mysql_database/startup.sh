@@ -31,6 +31,23 @@ if sudo mysqladmin ping --socket=/var/run/mysqld/mysqld.sock --silent 2>/dev/nul
         echo "To connect to the database, use:"
         echo "mysql -u root -p${DB_PASSWORD} -h localhost -P ${DB_PORT} ${DB_NAME}"
     fi
+
+    # Apply schema/seed if database exists but tables missing
+    if [ -f "schema.sql" ]; then
+        echo "Ensuring schema is applied..."
+        sudo mysql -h localhost -P ${DB_PORT} -u root -p${DB_PASSWORD} < schema.sql 2>/dev/null || true
+    fi
+    if [ -f "seed.sql" ]; then
+        # Only seed if tables are empty
+        ROWS=$(mysql -N -B -h localhost -P ${DB_PORT} -u ${DB_USER} -p${DB_PASSWORD} -D ${DB_NAME} -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='${DB_NAME}' AND table_name IN ('events','bookings');" 2>/dev/null || echo 0)
+        if [ "$ROWS" -ge 2 ]; then
+            EVENTS_COUNT=$(mysql -N -B -h localhost -P ${DB_PORT} -u ${DB_USER} -p${DB_PASSWORD} -D ${DB_NAME} -e "SELECT COUNT(*) FROM events;" 2>/dev/null || echo 0)
+            if [ "$EVENTS_COUNT" -eq 0 ]; then
+                echo "Applying seed data..."
+                mysql -h localhost -P ${DB_PORT} -u ${DB_USER} -p${DB_PASSWORD} -D ${DB_NAME} < seed.sql 2>/dev/null || true
+            fi
+        fi
+    fi
     
     echo ""
     echo "Script stopped - MySQL server already running."
@@ -45,6 +62,18 @@ if pgrep -f "mysqld.*--port=${DB_PORT}" > /dev/null 2>&1; then
     # Try to connect via TCP
     if mysql -u root -p${DB_PASSWORD} -h 127.0.0.1 -P ${DB_PORT} -e "SELECT 1;" 2>/dev/null; then
         echo "MySQL is accessible on port ${DB_PORT}."
+        # Ensure schema/seed applied on already running server
+        if [ -f "schema.sql" ]; then
+            echo "Ensuring schema is applied..."
+            mysql -h localhost -P ${DB_PORT} -u root -p${DB_PASSWORD} < schema.sql 2>/dev/null || true
+        fi
+        if [ -f "seed.sql" ]; then
+            EVENTS_COUNT=$(mysql -N -B -h localhost -P ${DB_PORT} -u ${DB_USER} -p${DB_PASSWORD} -D ${DB_NAME} -e "SELECT COUNT(*) FROM events;" 2>/dev/null || echo 0)
+            if [ "$EVENTS_COUNT" -eq 0 ]; then
+                echo "Applying seed data..."
+                mysql -h localhost -P ${DB_PORT} -u ${DB_USER} -p${DB_PASSWORD} -D ${DB_NAME} < seed.sql 2>/dev/null || true
+            fi
+        fi
         echo "Script stopped - server already running."
         exit 0
     fi
@@ -56,6 +85,18 @@ if [ -S /var/run/mysqld/mysqld.sock ]; then
     CURRENT_PORT=$(sudo mysql --socket=/var/run/mysqld/mysqld.sock -e "SHOW VARIABLES LIKE 'port';" 2>/dev/null | grep port | awk '{print $2}')
     if [ "$CURRENT_PORT" = "${DB_PORT}" ]; then
         echo "MySQL is already running on port ${DB_PORT}!"
+        # Ensure schema/seed applied on already running server
+        if [ -f "schema.sql" ]; then
+            echo "Ensuring schema is applied..."
+            mysql -h localhost -P ${DB_PORT} -u root -p${DB_PASSWORD} < schema.sql 2>/dev/null || true
+        fi
+        if [ -f "seed.sql" ]; then
+            EVENTS_COUNT=$(mysql -N -B -h localhost -P ${DB_PORT} -u ${DB_USER} -p${DB_PASSWORD} -D ${DB_NAME} -e "SELECT COUNT(*) FROM events;" 2>/dev/null || echo 0)
+            if [ "$EVENTS_COUNT" -eq 0 ]; then
+                echo "Applying seed data..."
+                mysql -h localhost -P ${DB_PORT} -u ${DB_USER} -p${DB_PASSWORD} -D ${DB_NAME} < seed.sql 2>/dev/null || true
+            fi
+        fi
         echo "Script stopped - server already running."
         exit 0
     else
@@ -107,6 +148,32 @@ GRANT ALL PRIVILEGES ON ${DB_NAME}.* TO 'root'@'localhost';
 
 FLUSH PRIVILEGES;
 EOF
+
+# Apply schema and seed
+if [ -f "schema.sql" ]; then
+    echo "Applying schema from schema.sql ..."
+    mysql -h localhost -P ${DB_PORT} -u root -p${DB_PASSWORD} < schema.sql
+else
+    echo "schema.sql not found; skipping schema application."
+fi
+
+if [ -f "seed.sql" ]; then
+    # Seed only if events table is empty
+    EVENTS_COUNT=$(mysql -N -B -h localhost -P ${DB_PORT} -u ${DB_USER} -p${DB_PASSWORD} -D ${DB_NAME} -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='${DB_NAME}' AND table_name='events';")
+    if [ "$EVENTS_COUNT" -eq 1 ]; then
+        ROWS_IN_EVENTS=$(mysql -N -B -h localhost -P ${DB_PORT} -u ${DB_USER} -p${DB_PASSWORD} -D ${DB_NAME} -e "SELECT COUNT(*) FROM events;" 2>/dev/null || echo 0)
+        if [ "$ROWS_IN_EVENTS" -eq 0 ]; then
+            echo "Applying seed data from seed.sql ..."
+            mysql -h localhost -P ${DB_PORT} -u ${DB_USER} -p${DB_PASSWORD} -D ${DB_NAME} < seed.sql
+        else
+            echo "Seed skipped: events table already has data ($ROWS_IN_EVENTS rows)."
+        fi
+    else
+        echo "Seed skipped: events table not found."
+    fi
+else
+    echo "seed.sql not found; skipping seed application."
+fi
 
 # Save connection command to a file
 echo "mysql -u ${DB_USER} -p${DB_PASSWORD} -h localhost -P ${DB_PORT} ${DB_NAME}" > db_connection.txt
